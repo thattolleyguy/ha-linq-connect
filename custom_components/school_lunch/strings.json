@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add School Lunch Menu",
+        "description": "Set up a school lunch menu sensor for your child",
+        "data": {
+          "child_name": "Child's Name",
+          "building_id": "Building ID",
+          "district_id": "District ID"
+        },
+        "data_description": {
+          "child_name": "A friendly name to identify this child (e.g., 'Emma' or 'John')",
+          "building_id": "The GUID for your school building from LINQ Connect",
+          "district_id": "The GUID for your school district from LINQ Connect"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the LINQ Connect API. Please check your IDs.",
+      "invalid_data": "The API returned invalid or unexpected data format.",
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "This building and district are already configured"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "domain": "school_lunch",
+  "name": "School Lunch Menu",
+  "codeowners": [],
+  "config_flow": true,
+  "documentation": "https://github.com/thattolleyguy/ha-linq-connect",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/thattolleyguy/ha-linq-connect/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}
