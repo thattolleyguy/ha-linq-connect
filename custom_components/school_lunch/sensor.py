@@ -23,6 +23,7 @@ from .const import (
     ATTR_CHILD_NAME,
     ATTR_LAST_UPDATED,
     ATTR_MENU_ITEMS,
+    ATTR_NEXT_LUNCH_DATE,
     ATTR_SCHOOL_NAME,
     CONF_BUILDING_ID,
     CONF_CHILD_NAME,
@@ -103,7 +104,7 @@ class SchoolLunchCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Error communicating with API: {err}") from err
 
     def _parse_menu_json(self, data: dict) -> dict:
-        """Parse the LINQ Connect JSON menu data."""
+        """Parse the LINQ Connect JSON menu data and find next available lunch."""
         menu_data = {
             "menu_items": [],
             "menu_by_category": {},
@@ -111,16 +112,15 @@ class SchoolLunchCoordinator(DataUpdateCoordinator):
             "date": None,
         }
 
-        # Get today's date in the format used by the API (M/D/YYYY)
-        today = datetime.now()
-        today_str = today.strftime("%-m/%-d/%Y")  # Remove leading zeros
-
-        # Also try with leading zeros in case format varies
-        today_alt = today.strftime("%m/%d/%Y")
+        # Get today's date (start of day for comparison)
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
         try:
-            # Navigate through the JSON structure
+            # Navigate through the JSON structure and collect all lunch days
             family_menu_sessions = data.get("FamilyMenuSessions", [])
+
+            # Store all available lunch days with their data
+            available_days = []
 
             for session in family_menu_sessions:
                 # Look for Lunch session
@@ -130,41 +130,65 @@ class SchoolLunchCoordinator(DataUpdateCoordinator):
                 menu_plans = session.get("MenuPlans", [])
 
                 for menu_plan in menu_plans:
-                    menu_plan_name = menu_plan.get("MenuPlanName", "")
                     days = menu_plan.get("Days", [])
 
                     for day in days:
-                        day_date = day.get("Date", "")
-
-                        # Check if this is today's menu (try both date formats)
-                        if day_date not in [today_str, today_alt]:
+                        day_date_str = day.get("Date", "")
+                        if not day_date_str:
                             continue
 
-                        menu_data["date"] = day_date
+                        # Try to parse the date (API uses M/D/YYYY format)
+                        try:
+                            # Try parsing with single digit month/day (e.g., "11/9/2025")
+                            parsed_date = datetime.strptime(day_date_str, "%m/%d/%Y")
+                        except ValueError:
+                            try:
+                                # Try without leading zeros (e.g., "1/9/2025")
+                                parsed_date = datetime.strptime(day_date_str, "%-m/%-d/%Y")
+                            except ValueError:
+                                _LOGGER.warning("Could not parse date: %s", day_date_str)
+                                continue
 
-                        # Process all menu meals for today
-                        menu_meals = day.get("MenuMeals", [])
+                        # Only consider dates today or in the future
+                        if parsed_date.date() >= today.date():
+                            available_days.append({
+                                "date": parsed_date,
+                                "date_str": day_date_str,
+                                "day_data": day
+                            })
 
-                        for meal in menu_meals:
-                            meal_name = meal.get("MenuMealName", "")
-                            if meal_name:
-                                menu_data["menu_plans"].append(meal_name)
+            # Sort by date to find the next available lunch
+            available_days.sort(key=lambda x: x["date"])
 
-                            recipe_categories = meal.get("RecipeCategories", [])
+            # Process the first available day (next lunch)
+            if available_days:
+                next_lunch = available_days[0]
+                menu_data["date"] = next_lunch["date_str"]
+                day_data = next_lunch["day_data"]
 
-                            for category in recipe_categories:
-                                category_name = category.get("CategoryName", "Unknown")
-                                recipes = category.get("Recipes", [])
+                # Process all menu meals for this day
+                menu_meals = day_data.get("MenuMeals", [])
 
-                                # Initialize category list if not exists
-                                if category_name not in menu_data["menu_by_category"]:
-                                    menu_data["menu_by_category"][category_name] = []
+                for meal in menu_meals:
+                    meal_name = meal.get("MenuMealName", "")
+                    if meal_name:
+                        menu_data["menu_plans"].append(meal_name)
 
-                                for recipe in recipes:
-                                    recipe_name = recipe.get("RecipeName", "")
-                                    if recipe_name:
-                                        menu_data["menu_by_category"][category_name].append(recipe_name)
-                                        menu_data["menu_items"].append(recipe_name)
+                    recipe_categories = meal.get("RecipeCategories", [])
+
+                    for category in recipe_categories:
+                        category_name = category.get("CategoryName", "Unknown")
+                        recipes = category.get("Recipes", [])
+
+                        # Initialize category list if not exists
+                        if category_name not in menu_data["menu_by_category"]:
+                            menu_data["menu_by_category"][category_name] = []
+
+                        for recipe in recipes:
+                            recipe_name = recipe.get("RecipeName", "")
+                            if recipe_name:
+                                menu_data["menu_by_category"][category_name].append(recipe_name)
+                                menu_data["menu_items"].append(recipe_name)
 
         except (KeyError, TypeError) as err:
             _LOGGER.error("Error parsing menu JSON structure: %s", err)
@@ -207,11 +231,36 @@ class SchoolLunchSensor(CoordinatorEntity, SensorEntity):
 
         menu_items = self.coordinator.data["menu_items"]
 
+        # Determine if this is today's lunch or a future lunch
+        date_str = self.coordinator.data.get("date")
+        date_prefix = ""
+
+        if date_str:
+            try:
+                # Try to parse the date
+                try:
+                    menu_date = datetime.strptime(date_str, "%m/%d/%Y")
+                except ValueError:
+                    menu_date = datetime.strptime(date_str, "%-m/%-d/%Y")
+
+                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+                # Add prefix if it's not today
+                if menu_date.date() > today.date():
+                    # Calculate days until
+                    days_until = (menu_date.date() - today.date()).days
+                    if days_until == 1:
+                        date_prefix = "Tomorrow: "
+                    else:
+                        date_prefix = f"{menu_date.strftime('%a %b %-d')}: "
+            except (ValueError, AttributeError):
+                pass
+
         # Return the first item as the main state, or a summary
         if len(menu_items) == 1:
-            return menu_items[0]
+            return f"{date_prefix}{menu_items[0]}"
         elif len(menu_items) > 1:
-            return f"{menu_items[0]} (+{len(menu_items) - 1} more)"
+            return f"{date_prefix}{menu_items[0]} (+{len(menu_items) - 1} more)"
 
         return "No menu available"
 
@@ -235,8 +284,9 @@ class SchoolLunchSensor(CoordinatorEntity, SensorEntity):
         if menu_plans := self.coordinator.data.get("menu_plans"):
             attributes["menu_plans"] = menu_plans
 
+        # Add the date of the next lunch
         if date := self.coordinator.data.get("date"):
-            attributes["menu_date"] = date
+            attributes[ATTR_NEXT_LUNCH_DATE] = date
 
         return attributes
 
